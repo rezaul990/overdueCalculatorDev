@@ -392,6 +392,42 @@
       box-shadow: 0 10px 25px rgba(0,0,0,0.2);
     }
 
+    /* SMS Modal */
+    .modal-overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.5);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 2000;
+    }
+    .modal-box {
+      background: #fff;
+      width: 95%;
+      max-width: 560px;
+      border-radius: var(--border-radius);
+      box-shadow: var(--shadow);
+      padding: 20px;
+    }
+    .modal-header { display:flex; align-items:center; justify-content:space-between; margin-bottom: 12px; }
+    .modal-title { font-size: 18px; font-weight: 700; color: var(--primary); }
+    .modal-close { background: transparent; border: none; font-size: 20px; cursor: pointer; color: var(--text-light); }
+    .modal-field { margin-bottom: 12px; }
+    .modal-field label { display:block; font-size: 13px; color: var(--text-light); margin-bottom: 6px; }
+    .modal-field select, .modal-field input, .modal-field textarea {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      font-size: 14px;
+      outline: none;
+    }
+    .modal-actions { display:flex; gap: 10px; justify-content:flex-end; margin-top: 10px; }
+    #sendSmsBtn { background: var(--secondary); color:#fff; }
+    #checkSmsStatusBtn { background: var(--primary); color:#fff; }
+    #smsResponse { font-size: 13px; color: var(--text-light); margin-top: 10px; white-space: pre-wrap; }
+
     @media(max-width:600px){
       button { flex: 100%; }
     }
@@ -453,6 +489,7 @@
       <button id="downloadBtn"><i class="material-icons">file_download</i> Export XLSX</button>
       <button id="screenshotBtn"><i class="material-icons">photo_camera</i> Screenshot</button>
       <button id="clearBtn"><i class="material-icons">delete_sweep</i> Clear</button>
+      <button id="smsBtn"><i class="material-icons">sms</i> Send SMS</button>
     </div>
 
     <!-- Spinner -->
@@ -469,6 +506,33 @@
       <p><b>Developed & Maintained by:</b></p>
       <img src="images/developer.png" alt="Developer Photo" class="dev-photo">
       <p>© 2025 Overdue Comparison App</p>
+    </div>
+  </div>
+
+  <!-- SMS Modal -->
+  <div class="modal-overlay" id="smsModal">
+    <div class="modal-box">
+      <div class="modal-header">
+        <div class="modal-title"><i class="material-icons" style="vertical-align: middle; margin-right: 6px;">sms</i> Send Overdue Report via SMS</div>
+        <button class="modal-close" id="smsCloseBtn"><i class="material-icons">close</i></button>
+      </div>
+      <div class="modal-field">
+        <label for="smsBranchSelect">Select Branch</label>
+        <select id="smsBranchSelect"></select>
+      </div>
+      <div class="modal-field">
+        <label for="smsNumbers">Mobile Numbers (comma separated, 8801XXXXXXXXX or 01XXXXXXXXX)</label>
+        <input id="smsNumbers" type="text" placeholder="e.g., 88017XXXXXXX, 01XXXXXXXXX">
+      </div>
+      <div class="modal-field">
+        <label for="smsPreview">Message Preview</label>
+        <textarea id="smsPreview" rows="4" readonly></textarea>
+      </div>
+      <div class="modal-actions">
+        <button id="checkSmsStatusBtn" style="display:none;">Check Status</button>
+        <button id="sendSmsBtn">Send SMS</button>
+      </div>
+      <div id="smsResponse"></div>
     </div>
   </div>
 

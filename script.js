@@ -33,6 +33,7 @@ setTimeout(() => {
   // downloadAccountsBtn removed as it doesn't exist in HTML
   let screenshotBtn;
   let clearBtn;
+  let smsBtn;
   let resultDiv;
   let loadingDiv;
   let notificationBox;
@@ -46,6 +47,16 @@ setTimeout(() => {
   let logoutBtn;
   let userCreditsEl;
   let upgradeBtn;
+
+  // SMS Modal elements
+  let smsModal;
+  let smsCloseBtn;
+  let smsBranchSelect;
+  let smsNumbersInput;
+  let smsPreviewArea;
+  let sendSmsBtn;
+  let checkSmsStatusBtn;
+  let smsResponseBox;
 
   // Credits state
   let userPlan = "free";
@@ -479,6 +490,9 @@ function renderTable(data){
   
   resultDiv.innerHTML=html;
 
+  // After rendering, prepare SMS branch options
+  try { populateSmsBranches(); } catch(_) {}
+
   // Sort by clicking headers
   document.querySelectorAll("#summaryTable th").forEach((th,i)=>{
     th.addEventListener("click", ()=>sortTable(i));
@@ -615,6 +629,102 @@ function toggleSection(sectionEl, chevronEl) {
   const isHidden = sectionEl.style.display === "none" || sectionEl.style.display === "";
   sectionEl.style.display = isHidden ? "block" : "none";
   chevronEl.textContent = isHidden ? "expand_less" : "expand_more";
+}
+
+// ---- SMS helpers and handlers
+const SMS_API_KEY = "OgpEF6hQITyav6q363xHtwtDKgvEHBQKsGs6sph8";
+let lastSmsRequestId = null;
+
+function openSmsModal(){
+  if (!currentUser) { showNotification("⚠ Please sign in to use this feature!", "error"); return; }
+  if (!summaryData.length) { showNotification("⚠ Run comparison first!", "error"); return; }
+  if (smsModal) smsModal.style.display = "flex";
+  updateSmsPreview();
+}
+function closeSmsModal(){ if (smsModal) smsModal.style.display = "none"; }
+
+function populateSmsBranches(){
+  if (!smsBranchSelect) return;
+  // Clear and refill; exclude TOTAL row
+  smsBranchSelect.innerHTML = "";
+  const branches = summaryData.filter(r => r["Branch Name"] && r["Branch Name"] !== "TOTAL");
+  branches.forEach(b => {
+    const opt = document.createElement("option");
+    opt.value = b["Branch Name"]; opt.textContent = b["Branch Name"];
+    smsBranchSelect.appendChild(opt);
+  });
+  smsBranchSelect.addEventListener("change", updateSmsPreview, { once: true });
+}
+
+function normalizeNumbers(input){
+  if (!input) return [];
+  return input.split(",")
+    .map(s => s.trim())
+    .filter(Boolean)
+    .map(n => {
+      // Convert 01XXXXXXXXX to 8801XXXXXXXXX
+      if (/^01\d{9}$/.test(n)) return "88" + n;
+      return n;
+    });
+}
+
+function buildSmsMessage(branchName){
+  const { changeLabel } = getOverdueLabels();
+  const row = summaryData.find(r => r["Branch Name"] === branchName);
+  const changeVal = row ? row.change : 0;
+  const formatted = (changeVal || 0).toLocaleString("en-IN");
+  return `Hi,\nYour are the Manager of ${branchName} Branch. You need to Deacrease Overdue of (${formatted}).`;
+}
+
+function updateSmsPreview(){
+  try {
+    if (!smsBranchSelect || !smsPreviewArea) return;
+    const branch = smsBranchSelect.value || (summaryData.find(r=>r["Branch Name"]!=="TOTAL")||{})["Branch Name"] || "";
+    if (branch) smsPreviewArea.value = buildSmsMessage(branch);
+  } catch(_){}
+}
+
+async function sendSmsForBranch(){
+  try {
+    if (!currentUser) { showNotification("⚠ Please sign in to use this feature!", "error"); return; }
+    if (!summaryData.length) { showNotification("⚠ Run comparison first!", "error"); return; }
+    const branch = smsBranchSelect && smsBranchSelect.value ? smsBranchSelect.value : null;
+    if (!branch) { showNotification("⚠ Select a branch", "error"); return; }
+    const numbers = normalizeNumbers(smsNumbersInput ? smsNumbersInput.value : "");
+    if (!numbers.length) { showNotification("⚠ Enter at least one valid number", "error"); return; }
+    const msg = buildSmsMessage(branch);
+
+    // Prepare GET request
+    const params = new URLSearchParams();
+    params.set("api_key", SMS_API_KEY);
+    params.set("msg", msg);
+    params.set("to", numbers.join(","));
+    const url = `https://api.sms.net.bd/sendsms?${params.toString()}`;
+
+    smsResponseBox.textContent = "Sending...";
+    const res = await fetch(url);
+    const data = await res.json().catch(()=>({ error: 409, msg: "Invalid JSON" }));
+    lastSmsRequestId = (data && data.data && data.data.request_id) ? data.data.request_id : null;
+    smsResponseBox.textContent = JSON.stringify(data, null, 2);
+    if (checkSmsStatusBtn) checkSmsStatusBtn.style.display = lastSmsRequestId ? "inline-block" : "none";
+  } catch (e) {
+    console.error(e);
+    if (smsResponseBox) smsResponseBox.textContent = `Error: ${e.message || e}`;
+  }
+}
+
+async function checkLastSmsStatus(){
+  try {
+    if (!lastSmsRequestId) { smsResponseBox.textContent = "No recent request id."; return; }
+    const url = `https://api.sms.net.bd/report/request/${lastSmsRequestId}/?api_key=${encodeURIComponent(SMS_API_KEY)}`;
+    smsResponseBox.textContent = "Checking status...";
+    const res = await fetch(url);
+    const data = await res.json().catch(()=>({ error: 409, msg: "Invalid JSON" }));
+    smsResponseBox.textContent = JSON.stringify(data, null, 2);
+  } catch (e) {
+    console.error(e);
+    if (smsResponseBox) smsResponseBox.textContent = `Error: ${e.message || e}`;
+  }
 }
 
 // ---- Screenshot
@@ -810,6 +920,7 @@ clearBtn = document.getElementById("clearBtn");
 resultDiv = document.getElementById("result");
 loadingDiv = document.getElementById("loading");
 notificationBox = document.getElementById("notificationBox");
+  smsBtn = document.getElementById("smsBtn");
 
 loginContainer = document.getElementById("loginContainer");
 googleSignInBtn = document.getElementById("googleSignInBtn");
@@ -819,6 +930,16 @@ userName = document.getElementById("userName");
 logoutBtn = document.getElementById("logoutBtn");
 userCreditsEl = document.getElementById("userCredits");
 upgradeBtn = document.getElementById("upgradeBtn");
+
+  // SMS modal refs
+  smsModal = document.getElementById("smsModal");
+  smsCloseBtn = document.getElementById("smsCloseBtn");
+  smsBranchSelect = document.getElementById("smsBranchSelect");
+  smsNumbersInput = document.getElementById("smsNumbers");
+  smsPreviewArea = document.getElementById("smsPreview");
+  sendSmsBtn = document.getElementById("sendSmsBtn");
+  checkSmsStatusBtn = document.getElementById("checkSmsStatusBtn");
+  smsResponseBox = document.getElementById("smsResponse");
 
 // Event bindings with try-catch blocks to prevent errors
   console.log("compareBtn:", compareBtn);
@@ -846,6 +967,20 @@ upgradeBtn = document.getElementById("upgradeBtn");
     if (clearBtn) clearBtn.addEventListener("click", clearFiles);
     else console.error("clearBtn is null");
   } catch (e) { console.error("Error with clearBtn:", e); }
+
+  // SMS open/close
+  try {
+    if (smsBtn) smsBtn.addEventListener("click", openSmsModal);
+  } catch (e) { console.error("Error with smsBtn:", e); }
+  try {
+    if (smsCloseBtn) smsCloseBtn.addEventListener("click", closeSmsModal);
+  } catch (e) { console.error("Error with smsCloseBtn:", e); }
+  try {
+    if (sendSmsBtn) sendSmsBtn.addEventListener("click", sendSmsForBranch);
+  } catch (e) { console.error("Error with sendSmsBtn:", e); }
+  try {
+    if (checkSmsStatusBtn) checkSmsStatusBtn.addEventListener("click", checkLastSmsStatus);
+  } catch (e) { console.error("Error with checkSmsStatusBtn:", e); }
 
   // Auth event bindings
   console.log("googleSignInBtn:", googleSignInBtn);
