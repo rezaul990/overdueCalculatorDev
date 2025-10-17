@@ -23,6 +23,10 @@ let accountsData = [];
 let personSummaryData = [];
 let branchYearSummaryData = [];
 let currentUser = null;
+// Global credit state to avoid shadowing inside UI scope
+window.userPlan = "free";
+window.userCreditsCount = 0;
+window.userSmsCreditsCount = 0;
 
 setTimeout(() => {
   // DOM Elements (initialized inside DOMContentLoaded)
@@ -47,6 +51,7 @@ setTimeout(() => {
   let logoutBtn;
   let userCreditsEl;
   let upgradeBtn;
+  let userSmsCreditsEl;
 
   // SMS Modal elements
   let smsModal;
@@ -57,10 +62,13 @@ setTimeout(() => {
   let sendSmsBtn;
   let checkSmsStatusBtn;
   let smsResponseBox;
+  let smsSaveBtn;
+  let sendAllSmsBtn;
 
   // Credits state
-  let userPlan = "free";
-  let userCreditsCount = 0;
+  userPlan = "free";
+  userCreditsCount = 0;
+  userSmsCreditsCount = 0;
 
   // ---- Helper: Notifications
   function showNotification(msg,type){
@@ -631,14 +639,61 @@ function toggleSection(sectionEl, chevronEl) {
   chevronEl.textContent = isHidden ? "expand_less" : "expand_more";
 }
 
+function isSmsEnabled(){
+  const plan = (userPlan || '').toString().trim().toLowerCase();
+  return !!currentUser && (plan === 'sms' || plan === 'pro') && Number(userSmsCreditsCount) > 0;
+}
+
+function updateSmsUIVisibility(){
+  try {
+    const smsButton = document.getElementById("smsBtn");
+    if (!smsButton) return;
+    // Always visible and enabled; click handlers enforce plan/credits/compare checks
+    smsButton.style.display = 'flex';
+    smsButton.disabled = false;
+    smsButton.style.opacity = '1';
+    smsButton.title = 'Send SMS';
+  } catch (_) {}
+}
+
 // ---- SMS helpers and handlers
-const SMS_API_KEY = "OgpEF6hQITyav6q363xHtwtDKgvEHBQKsGs6sph8";
-let lastSmsRequestId = null;
+// New SMS provider (bulksmsbd)
+const SMS_API_KEY = "Sp5czEFRFaBLkiAuS9rs";
+const SMS_ENDPOINT = "https://bulksmsbd.net/api/smsapi"; // use HTTPS to avoid mixed content
+let lastSmsRequestId = null; // bulksmsbd does not return request_id; keep for compatibility
+let branchNumbersCache = {}; // { Branch Name: [numbers] }
+let userSenderIdCache = null; // cached approved sender ID per user
+
+async function loadUserSenderId(){
+  try {
+    const uid = firebase.auth().currentUser && firebase.auth().currentUser.uid;
+    if (!uid) return;
+    if (userSenderIdCache == null) {
+      const userRef = db.collection("users").doc(uid);
+      const snap = await userRef.get();
+      const data = snap.exists ? (snap.data()||{}) : {};
+      userSenderIdCache = (data.senderId || "").toString();
+    }
+    const el = document.getElementById("smsSenderId");
+    if (el && !el.value) el.value = userSenderIdCache || "";
+  } catch(_) {}
+}
+
+async function refreshUserCreditsNow(){
+  try {
+    if (firebase.auth().currentUser) {
+      await ensureUserCredits(firebase.auth().currentUser);
+      if (typeof updateCreditsUI === 'function') updateCreditsUI();
+    }
+  } catch(_) {}
+}
 
 function openSmsModal(){
   if (!currentUser) { showNotification("⚠ Please sign in to use this feature!", "error"); return; }
   if (!summaryData.length) { showNotification("⚠ Run comparison first!", "error"); return; }
   if (smsModal) smsModal.style.display = "flex";
+  // preload approved sender ID if available
+  try { loadUserSenderId(); } catch(_) {}
   updateSmsPreview();
 }
 function closeSmsModal(){ if (smsModal) smsModal.style.display = "none"; }
@@ -653,19 +708,70 @@ function populateSmsBranches(){
     opt.value = b["Branch Name"]; opt.textContent = b["Branch Name"];
     smsBranchSelect.appendChild(opt);
   });
-  smsBranchSelect.addEventListener("change", updateSmsPreview, { once: true });
+  // Listen for every change (not once) so user can switch branches repeatedly
+  smsBranchSelect.addEventListener("change", onSmsBranchChanged);
+  // After options render, load numbers for the first branch
+  if (branches.length) loadBranchNumbers(branches[0]["Branch Name"]);
+}
+
+function onSmsBranchChanged(){
+  const branch = smsBranchSelect.value;
+  loadBranchNumbers(branch);
+}
+
+async function loadBranchNumbers(branch){
+  try {
+    // use cache if present
+    if (branchNumbersCache[branch]) {
+      if (smsNumbersInput) smsNumbersInput.value = branchNumbersCache[branch].join(", ");
+      updateSmsPreview();
+      return;
+    }
+    // fetch from Firestore: users/{uid}/branches/{branch}
+    const uid = firebase.auth().currentUser && firebase.auth().currentUser.uid;
+    if (!uid) return;
+    const docRef = db.collection("users").doc(uid).collection("branches").doc(branch);
+    const snap = await docRef.get();
+    const data = snap.exists ? (snap.data()||{}) : {};
+    const numbers = Array.isArray(data.numbers) ? data.numbers : [];
+    branchNumbersCache[branch] = numbers;
+    if (smsNumbersInput) smsNumbersInput.value = numbers.join(", ");
+  } catch (e) { console.error("loadBranchNumbers", e); }
+  updateSmsPreview();
+}
+
+async function saveBranchNumbers(){
+  try {
+    const branch = smsBranchSelect && smsBranchSelect.value ? smsBranchSelect.value : null;
+    if (!branch) { showNotification("⚠ Select a branch", "error"); return; }
+    const { valid } = normalizeNumbers(smsNumbersInput ? smsNumbersInput.value : "");
+    const uid = firebase.auth().currentUser && firebase.auth().currentUser.uid;
+    if (!uid) return;
+    await db.collection("users").doc(uid).collection("branches").doc(branch).set({ numbers: valid }, { merge: true });
+    // save approved sender ID at user root for reuse
+    const senderId = (document.getElementById("smsSenderId")?.value || "").trim();
+    if (senderId) {
+      await db.collection("users").doc(uid).set({ senderId }, { merge: true });
+      userSenderIdCache = senderId;
+    }
+    branchNumbersCache[branch] = valid;
+    showNotification("✅ Numbers saved for branch.", "success");
+  } catch (e) {
+    console.error("saveBranchNumbers", e);
+    showNotification("⚠ Failed to save numbers", "error");
+  }
 }
 
 function normalizeNumbers(input){
-  if (!input) return [];
-  return input.split(",")
-    .map(s => s.trim())
-    .filter(Boolean)
-    .map(n => {
-      // Convert 01XXXXXXXXX to 8801XXXXXXXXX
-      if (/^01\d{9}$/.test(n)) return "88" + n;
-      return n;
-    });
+  const result = { valid: [], invalid: [] };
+  if (!input) return result;
+  input.split(",").map(s=>s.trim()).filter(Boolean).forEach(n=>{
+    let v = n;
+    if (/^01\d{9}$/.test(v)) v = "88" + v;
+    if (/^8801\d{9}$/.test(v)) result.valid.push(v);
+    else result.invalid.push(n);
+  });
+  return result;
 }
 
 function buildSmsMessage(branchName){
@@ -673,7 +779,14 @@ function buildSmsMessage(branchName){
   const row = summaryData.find(r => r["Branch Name"] === branchName);
   const changeVal = row ? row.change : 0;
   const formatted = (changeVal || 0).toLocaleString("en-IN");
-  return `Hi,\nYour are the Manager of ${branchName} Branch. You need to Deacrease Overdue of (${formatted}).`;
+  return `Hi,\nYour are the Manager of ${branchName} Branch. You need to Decrease Overdue of ${formatted}.`;
+}
+
+function computeSmsMeta(message, recipientsCount){
+  const len = message.length;
+  const perSeg = len <= 70 ? 70 : 67; // Unicode assumption
+  const segments = Math.ceil(len / perSeg) || 1;
+  return { length: len, segments, recipients: recipientsCount || 0 };
 }
 
 function updateSmsPreview(){
@@ -682,31 +795,50 @@ function updateSmsPreview(){
     const branch = smsBranchSelect.value || (summaryData.find(r=>r["Branch Name"]!=="TOTAL")||{})["Branch Name"] || "";
     if (branch) smsPreviewArea.value = buildSmsMessage(branch);
   } catch(_){}
+  // recipients + meta
+  const { valid } = normalizeNumbers(smsNumbersInput ? smsNumbersInput.value : "");
+  const msg = smsPreviewArea ? smsPreviewArea.value : "";
+  const meta = computeSmsMeta(msg, valid.length);
+  const metaEl = document.getElementById("smsMeta");
+  if (metaEl) metaEl.textContent = `Length: ${meta.length} | Segments: ${meta.segments} | Recipients: ${meta.recipients}`;
 }
 
 async function sendSmsForBranch(){
   try {
+    await refreshUserCreditsNow();
     if (!currentUser) { showNotification("⚠ Please sign in to use this feature!", "error"); return; }
     if (!summaryData.length) { showNotification("⚠ Run comparison first!", "error"); return; }
+    // Allow send based on SMS credits only (plan managed by credits)
+    if (userSmsCreditsCount <= 0) { showNotification("⚠ You have 0 SMS credits", "error"); return; }
     const branch = smsBranchSelect && smsBranchSelect.value ? smsBranchSelect.value : null;
     if (!branch) { showNotification("⚠ Select a branch", "error"); return; }
-    const numbers = normalizeNumbers(smsNumbersInput ? smsNumbersInput.value : "");
-    if (!numbers.length) { showNotification("⚠ Enter at least one valid number", "error"); return; }
+    const { valid, invalid } = normalizeNumbers(smsNumbersInput ? smsNumbersInput.value : "");
+    if (!valid.length) { showNotification("⚠ Enter at least one valid number", "error"); return; }
+    if (invalid.length && smsResponseBox) { smsResponseBox.textContent = `Ignoring invalid numbers: ${invalid.join(", ")}`; }
     const msg = buildSmsMessage(branch);
+    const senderId = (document.getElementById("smsSenderId")?.value || "").trim();
+    if (!senderId) { showNotification("⚠ Sender ID required", "error"); return; }
 
-    // Prepare GET request
-    const params = new URLSearchParams();
-    params.set("api_key", SMS_API_KEY);
-    params.set("msg", msg);
-    params.set("to", numbers.join(","));
-    const url = `https://api.sms.net.bd/sendsms?${params.toString()}`;
-
+    // bulksmsbd requires POST with api_key, senderid, number, message
     smsResponseBox.textContent = "Sending...";
-    const res = await fetch(url);
-    const data = await res.json().catch(()=>({ error: 409, msg: "Invalid JSON" }));
-    lastSmsRequestId = (data && data.data && data.data.request_id) ? data.data.request_id : null;
-    smsResponseBox.textContent = JSON.stringify(data, null, 2);
-    if (checkSmsStatusBtn) checkSmsStatusBtn.style.display = lastSmsRequestId ? "inline-block" : "none";
+    const res = await fetch(SMS_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        api_key: SMS_API_KEY,
+        type: 'text',
+        senderid: senderId,
+        number: valid.join(","),
+        message: msg
+      })
+    });
+    const text = await res.text();
+    // API may return plain text codes like 202; display as-is
+    smsResponseBox.textContent = text;
+    if (/\b202\b/.test(text)) { await decrementOneSmsCredit(); }
+    // Provider returns plain text; no request_id available
+    lastSmsRequestId = null;
+    if (checkSmsStatusBtn) checkSmsStatusBtn.style.display = "none"; // not supported
   } catch (e) {
     console.error(e);
     if (smsResponseBox) smsResponseBox.textContent = `Error: ${e.message || e}`;
@@ -715,12 +847,57 @@ async function sendSmsForBranch(){
 
 async function checkLastSmsStatus(){
   try {
-    if (!lastSmsRequestId) { smsResponseBox.textContent = "No recent request id."; return; }
-    const url = `https://api.sms.net.bd/report/request/${lastSmsRequestId}/?api_key=${encodeURIComponent(SMS_API_KEY)}`;
-    smsResponseBox.textContent = "Checking status...";
-    const res = await fetch(url);
-    const data = await res.json().catch(()=>({ error: 409, msg: "Invalid JSON" }));
-    smsResponseBox.textContent = JSON.stringify(data, null, 2);
+    // Not supported by bulksmsbd; show balance instead as a helpful alternative
+    smsResponseBox.textContent = "This provider does not support request status lookup via API. Checking balance...";
+    const bal = await fetch(`http://bulksmsbd.net/api/getBalanceApi?api_key=${encodeURIComponent(SMS_API_KEY)}`);
+    const balText = await bal.text();
+    smsResponseBox.textContent = balText;
+  } catch (e) {
+    console.error(e);
+    if (smsResponseBox) smsResponseBox.textContent = `Error: ${e.message || e}`;
+  }
+}
+
+async function sendSmsForAllBranches(){
+  try {
+    await refreshUserCreditsNow();
+    if (!currentUser) { showNotification("⚠ Please sign in to use this feature!", "error"); return; }
+    if (!summaryData.length) { showNotification("⚠ Run comparison first!", "error"); return; }
+    const senderId = (document.getElementById("smsSenderId")?.value || "").trim();
+    if (!senderId) { showNotification("⚠ Sender ID required", "error"); return; }
+    // Allow send based on SMS credits only (plan managed by credits)
+    const branches = summaryData.filter(r => r["Branch Name"] && r["Branch Name"] !== "TOTAL");
+    if (!branches.length) { showNotification("⚠ No branches found", "error"); return; }
+    smsResponseBox.textContent = "Sending to all branches...";
+    let results = [];
+    for (const b of branches) {
+      if (userSmsCreditsCount <= 0) { results.push({ branch: b["Branch Name"], error: "No SMS credits left" }); break; }
+      const branch = b["Branch Name"];
+      // load numbers (cache or db)
+      await loadBranchNumbers(branch);
+      const { valid } = normalizeNumbers((branchNumbersCache[branch]||[]).join(","));
+      if (!valid.length) { results.push({ branch, error: "No valid numbers" }); continue; }
+      const msg = buildSmsMessage(branch);
+      try {
+        const res = await fetch(SMS_ENDPOINT, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            api_key: SMS_API_KEY,
+            type: 'text',
+            senderid: senderId,
+            number: valid.join(","),
+            message: msg
+          })
+        });
+        const text = await res.text();
+        results.push({ branch, response: text });
+        if (/\b202\b/.test(text)) { await decrementOneSmsCredit(); }
+      } catch (e) {
+        results.push({ branch, error: e.message || String(e) });
+      }
+    }
+    smsResponseBox.textContent = JSON.stringify(results, null, 2);
   } catch (e) {
     console.error(e);
     if (smsResponseBox) smsResponseBox.textContent = `Error: ${e.message || e}`;
@@ -894,10 +1071,12 @@ function showUserProfile(user) {
   userName.textContent = user.displayName || user.email;
   // fetch or init credits
   ensureUserCredits(user);
+  if (typeof updateSmsUIVisibility === "function") updateSmsUIVisibility();
 }
 
 function hideUserProfile() {
   userProfile.style.display = "none";
+  if (typeof updateSmsUIVisibility === "function") updateSmsUIVisibility();
 }
 
 function showLoginContainer() {
@@ -929,6 +1108,7 @@ userAvatar = document.getElementById("userAvatar");
 userName = document.getElementById("userName");
 logoutBtn = document.getElementById("logoutBtn");
 userCreditsEl = document.getElementById("userCredits");
+  userSmsCreditsEl = document.getElementById("userSmsCredits");
 upgradeBtn = document.getElementById("upgradeBtn");
 
   // SMS modal refs
@@ -940,6 +1120,8 @@ upgradeBtn = document.getElementById("upgradeBtn");
   sendSmsBtn = document.getElementById("sendSmsBtn");
   checkSmsStatusBtn = document.getElementById("checkSmsStatusBtn");
   smsResponseBox = document.getElementById("smsResponse");
+  smsSaveBtn = document.getElementById("smsSaveBtn");
+  sendAllSmsBtn = document.getElementById("sendAllSmsBtn");
 
 // Event bindings with try-catch blocks to prevent errors
   console.log("compareBtn:", compareBtn);
@@ -981,6 +1163,15 @@ upgradeBtn = document.getElementById("upgradeBtn");
   try {
     if (checkSmsStatusBtn) checkSmsStatusBtn.addEventListener("click", checkLastSmsStatus);
   } catch (e) { console.error("Error with checkSmsStatusBtn:", e); }
+  try {
+    if (smsSaveBtn) smsSaveBtn.addEventListener("click", saveBranchNumbers);
+  } catch (e) { console.error("Error with smsSaveBtn:", e); }
+  try {
+    if (sendAllSmsBtn) sendAllSmsBtn.addEventListener("click", sendSmsForAllBranches);
+  } catch (e) { console.error("Error with sendAllSmsBtn:", e); }
+
+  // Ensure SMS button visibility refreshes after DOM is ready
+  try { if (typeof updateSmsUIVisibility === "function") updateSmsUIVisibility(); } catch (_) {}
 
   // Auth event bindings
   console.log("googleSignInBtn:", googleSignInBtn);
@@ -1041,15 +1232,18 @@ async function ensureUserCredits(user) {
         displayName: user.displayName || null,
         plan: "free",
         credits: 30,
+        smsCredits: 0,
         createdAt: firebase.firestore.FieldValue.serverTimestamp(),
         updatedAt: firebase.firestore.FieldValue.serverTimestamp()
       });
       userPlan = "free";
       userCreditsCount = 30;
+      userSmsCreditsCount = 0;
     } else {
       const data = snap.data();
       userPlan = data.plan || "free";
       userCreditsCount = Number(data.credits || 0);
+      userSmsCreditsCount = Number(data.smsCredits || 0);
     }
     if (typeof updateCreditsUI === "function") updateCreditsUI();
   } catch (e) {
@@ -1063,6 +1257,9 @@ function updateCreditsUI() {
     const btn = document.getElementById("compareBtn");
     if (el) el.textContent = `${userCreditsCount} left`;
     if (btn) btn.disabled = (userPlan === "free" && userCreditsCount <= 0);
+    const smsEl = document.getElementById("userSmsCredits");
+    if (smsEl) smsEl.textContent = `SMS: ${userSmsCreditsCount}`;
+    if (typeof updateSmsUIVisibility === "function") updateSmsUIVisibility();
   } catch (_) {}
 }
 
@@ -1081,5 +1278,23 @@ async function decrementOneCredit() {
     updateCreditsUI();
   } catch (e) {
     console.error("decrementOneCredit error", e);
+  }
+}
+
+async function decrementOneSmsCredit() {
+  if (!firebase.auth().currentUser) return;
+  try {
+    const userRef = db.collection("users").doc(firebase.auth().currentUser.uid);
+    await userRef.update({
+      smsCredits: firebase.firestore.FieldValue.increment(-1),
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    const doc = await userRef.get();
+    const data = doc.data() || {};
+    userPlan = data.plan || userPlan;
+    userSmsCreditsCount = Number(data.smsCredits || 0);
+    updateCreditsUI();
+  } catch (e) {
+    console.error("decrementOneSmsCredit error", e);
   }
 }
