@@ -41,6 +41,11 @@ setTimeout(() => {
   let resultDiv;
   let loadingDiv;
   let notificationBox;
+  // Saved Master controls
+  let rememberMasterChk;
+  let useSavedMasterChk;
+  let clearSavedMasterBtn;
+  let savedMasterInfo;
 
   // Auth Elements (initialized inside DOMContentLoaded)
   let loginContainer;
@@ -75,6 +80,79 @@ setTimeout(() => {
     notificationBox.innerText=msg;
     notificationBox.className="notification "+type;
     notificationBox.style.display="block";
+  }
+
+  // ---- IndexedDB helpers for persisting Master file per user
+  const IDB_DB_NAME = "overdue_app_db";
+  const IDB_STORE = "saved_master";
+  let idb;
+  function getUserScopedKey(){
+    const uid = (firebase.auth().currentUser && firebase.auth().currentUser.uid) || "guest";
+    return `master_${uid}`;
+  }
+  
+  // Initialize saved master status on page load
+  async function initSavedMasterStatus(){
+    try {
+      const key = getUserScopedKey();
+      console.log("Checking for saved master with key:", key);
+      const saved = await idbGet(key);
+      console.log("Retrieved saved master:", saved);
+      updateSavedMasterBadge(saved ? `Saved: ${saved.name}` : "");
+      if (useSavedMasterChk && saved) {
+        useSavedMasterChk.checked = true;
+      }
+    } catch(e) {
+      console.error("Failed to load saved master status:", e);
+    }
+  }
+  function openIdb(){
+    return new Promise((resolve,reject)=>{
+      if (idb) { resolve(idb); return; }
+      const req = indexedDB.open(IDB_DB_NAME, 1);
+      req.onupgradeneeded = (e)=>{
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+      };
+      req.onsuccess = ()=>{ idb = req.result; resolve(idb); };
+      req.onerror = ()=>reject(req.error);
+    });
+  }
+  async function idbSet(key, value){
+    const db = await openIdb();
+    return new Promise((resolve,reject)=>{
+      const tx = db.transaction(IDB_STORE, "readwrite");
+      tx.oncomplete = ()=>resolve();
+      tx.onerror = ()=>reject(tx.error);
+      const req = tx.objectStore(IDB_STORE).put(value, key);
+      req.onsuccess = ()=>resolve();
+      req.onerror = ()=>reject(req.error);
+    });
+  }
+  async function idbGet(key){
+    const db = await openIdb();
+    return new Promise((resolve,reject)=>{
+      const tx = db.transaction(IDB_STORE, "readonly");
+      tx.onerror = ()=>reject(tx.error);
+      const req = tx.objectStore(IDB_STORE).get(key);
+      req.onsuccess = ()=>resolve(req.result);
+      req.onerror = ()=>reject(req.error);
+    });
+  }
+  async function idbDelete(key){
+    const db = await openIdb();
+    return new Promise((resolve,reject)=>{
+      const tx = db.transaction(IDB_STORE, "readwrite");
+      tx.oncomplete = ()=>resolve();
+      tx.onerror = ()=>reject(tx.error);
+      tx.objectStore(IDB_STORE).delete(key);
+    });
+  }
+  function updateSavedMasterBadge(info){
+    try {
+      if (!savedMasterInfo) return;
+      savedMasterInfo.textContent = info || "";
+    } catch(_){}
   }
   function hideNotification(){
   notificationBox.style.display="none";
@@ -215,14 +293,27 @@ async function processFiles() {
     console.error("credit check failed", e);
   }
   
-  if (!masterInput.files[0] || !dailyInput.files[0]) {
-    showNotification("⚠ Please select/upload both files!", "error");
-    return;
-  }
+  // Determine Master source: from input or saved
+  const wantSaved = !!(useSavedMasterChk && useSavedMasterChk.checked);
+  const masterFileFromInput = masterInput.files[0] || null;
+  if (!dailyInput.files[0]) { showNotification("⚠ Please select/upload Running Overdue file!", "error"); return; }
+  if (!wantSaved && !masterFileFromInput) { showNotification("⚠ Please select/upload Master file or enable 'Use saved Master'", "error"); return; }
 
   loadingDiv.style.display="block"; resultDiv.innerHTML=""; hideNotification();
 
-  const masterData=await readExcel(masterInput.files[0]);
+  // Load Master either from input or IndexedDB
+  let masterData;
+  if (wantSaved && !masterFileFromInput) {
+    const key = getUserScopedKey();
+    const saved = await idbGet(key);
+    if (!saved) { showNotification("⚠ No saved Master found on this device.", "error"); return; }
+    const masterBlob = saved && saved.blob ? saved.blob : null;
+    if (!masterBlob) { showNotification("⚠ Saved Master is corrupted.", "error"); return; }
+    const fileLike = new File([masterBlob], saved.name || "saved_master.xlsx", { type: masterBlob.type || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    masterData = await readExcel(fileLike);
+  } else {
+    masterData = await readExcel(masterFileFromInput);
+  }
   const dailyData=await readExcel(dailyInput.files[0]);
 
   let dailyMap={};
@@ -1100,6 +1191,11 @@ resultDiv = document.getElementById("result");
 loadingDiv = document.getElementById("loading");
 notificationBox = document.getElementById("notificationBox");
   smsBtn = document.getElementById("smsBtn");
+  // Saved Master controls
+  rememberMasterChk = document.getElementById("rememberMasterChk");
+  useSavedMasterChk = document.getElementById("useSavedMasterChk");
+  clearSavedMasterBtn = document.getElementById("clearSavedMasterBtn");
+  savedMasterInfo = document.getElementById("savedMasterInfo");
 
 loginContainer = document.getElementById("loginContainer");
 googleSignInBtn = document.getElementById("googleSignInBtn");
@@ -1137,6 +1233,56 @@ upgradeBtn = document.getElementById("upgradeBtn");
   } catch (e) { console.error("Error with downloadBtn:", e); }
   
   // downloadAccountsBtn removed as it doesn't exist in HTML
+  // Remember Master: when a new Master is chosen, save if checked
+  try {
+    if (masterInput) masterInput.addEventListener("change", async ()=>{
+      try {
+        const f = masterInput.files && masterInput.files[0];
+        if (!f) return;
+        if (rememberMasterChk && rememberMasterChk.checked) {
+          const key = getUserScopedKey();
+          console.log("Saving master file with key:", key);
+          const arrayBuffer = await f.arrayBuffer();
+          const blob = new Blob([arrayBuffer], { type: f.type || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+          const saveData = { blob, name: f.name, savedAt: Date.now() };
+          console.log("Saving data:", saveData);
+          await idbSet(key, saveData);
+          updateSavedMasterBadge(`Saved: ${f.name}`);
+          showNotification("✅ Master saved on this device.", "success");
+        }
+      } catch (e) { console.error(e); showNotification("⚠ Failed to save Master locally", "error"); }
+    });
+  } catch (e) { console.error("Error wiring masterInput save:", e); }
+
+  // Clear saved Master
+  try {
+    if (clearSavedMasterBtn) clearSavedMasterBtn.addEventListener("click", async ()=>{
+      try {
+        const key = getUserScopedKey();
+        await idbDelete(key);
+        updateSavedMasterBadge("");
+        if (useSavedMasterChk) useSavedMasterChk.checked = false;
+        showNotification("✅ Saved Master cleared.", "success");
+      } catch(e){ console.error(e); showNotification("⚠ Failed to clear saved Master", "error"); }
+    });
+  } catch (e) { console.error("Error with clearSavedMasterBtn:", e); }
+
+  // Initialize saved master status on page load (with delay to ensure DOM is ready)
+  try {
+    setTimeout(() => {
+      initSavedMasterStatus();
+    }, 500);
+  } catch(e) { console.error("Error initializing saved master status:", e); }
+
+  // On auth ready, reflect saved status
+  try {
+    firebase.auth().onAuthStateChanged(async (u)=>{
+      try {
+        // Re-check saved status when auth state changes
+        await initSavedMasterStatus();
+      } catch(_){}
+    });
+  } catch(_){}
   
   console.log("screenshotBtn:", screenshotBtn);
   try {
