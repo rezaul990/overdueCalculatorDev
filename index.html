@@ -29,8 +29,8 @@
 
   <style>
     :root {
-      --primary: #4361ee;
-      --primary-light: #4895ef;
+      --primary: #1e3a8a; /* deeper blue for higher contrast */
+      --primary-light: #274690;
       --secondary: #3f37c9;
       --danger: #ef476f;
       --success: #06d6a0;
@@ -309,23 +309,23 @@
       margin-top: 30px;
       border-radius: var(--border-radius);
       overflow: hidden;
-      font-size: 15px;
+      font-size: 16px; /* larger for screenshot readability */
+      line-height: 1.5;
       font-family: 'Inter', 'Noto Sans Bengali', Arial, sans-serif;
-      box-shadow: 0 5px 15px rgba(0,0,0,0.05);
+      box-shadow: 0 6px 18px rgba(0,0,0,0.08);
     }
     th {
       background: var(--primary);
-      color: white;
-      padding: 16px;
+      color: #ffffff;
+      padding: 18px 16px;
       cursor: pointer;
-      font-weight: 700;
-      font-size: 16px;
+      font-weight: 800; /* bolder header for clarity */
+      font-size: 17px;
+      letter-spacing: .2px;
       position: relative;
       transition: var(--transition);
     }
-    th:hover {
-      background: var(--primary-light);
-    }
+    th:hover { background: var(--primary-light); }
     th::after {
       content: '⬍';
       font-size: 12px;
@@ -333,22 +333,25 @@
       opacity: 0.7;
     }
     td {
-      padding: 14px 16px;
-      text-align: center;
-      border-bottom: 1px solid #e5e7eb;
-      color: #1f2937;
+      padding: 16px;
+      border-bottom: 1px solid #d1d5db; /* stronger divider */
+      color: #0b1320; /* darkest readable text */
       font-weight: 600;
       text-transform: capitalize;
     }
+    /* Alignment: names left, numbers right in screenshot */
+    td:first-child { text-align: left; }
+    td:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
     tr:last-child td {
       border-bottom: none;
       font-weight: 700;
-      background: #f9fafb;
+      background: #eef2ff; /* highlight total row */
     }
-    tr:nth-child(even) { background: #f8fafc; }
-    tr:hover td { background: #edf2f7; }
-    .increase { color: var(--danger); font-weight: 700; }
-    .decrease { color: var(--success); font-weight: 700; }
+    tr:nth-child(odd) { background: #ffffff; }
+    tr:nth-child(even) { background: #f3f4f6; }
+    tr:hover td { background: #e6eafc; }
+    .increase { color: #b91c1c; font-weight: 800; }
+    .decrease { color: #047857; font-weight: 800; }
     .neutral { color: #6b7280; font-weight: 600; }
 
     #loading {

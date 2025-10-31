@@ -1,7 +1,8 @@
 body {
-  font-family: Arial, sans-serif;
+  font-family: 'Inter', 'Noto Sans Bengali', Arial, sans-serif;
   margin: 20px;
   background: #f9f9f9;
+  color: #111827;
 }
 h1 {
   color: #2c3e50;
@@ -12,33 +13,34 @@ input[type=file] {
 }
 table {
   margin-top: 20px;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   width: 100%;
   background: #fff;
+  font-size: 16px;
+  line-height: 1.5;
 }
 table, th, td {
-  border: 1px solid #ccc;
+  border: 1px solid #d1d5db;
 }
 th, td {
-  padding: 8px;
-  text-align: right;
+  padding: 12px 14px;
 }
-th:first-child, td:first-child {
-  text-align: left;
-}
+td:first-child { text-align: left; }
+td:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
 .increase {
-  background-color: #ffdddd;
-  color: #c0392b;
-  font-weight: bold;
+  background-color: #ffe5e9;
+  color: #d90429;
+  font-weight: 700;
 }
 .decrease {
-  background-color: #ddffdd;
-  color: #27ae60;
-  font-weight: bold;
+  background-color: #e6fbf1;
+  color: #0a7f51;
+  font-weight: 700;
 }
 .neutral {
-  background-color: #f0f0f0;
-  color: #7f8c8d;
+  background-color: #f0f2f5;
+  color: #6b7280;
 }
 button {
   margin-top: 15px;
