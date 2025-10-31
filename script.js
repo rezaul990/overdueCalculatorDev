@@ -997,6 +997,14 @@ function renderTable(data){
       <span id="branchYearChevron" class="material-icons" style="font-size:20px; opacity:0.8;">expand_more</span>
     </h2>`;
     html += `<div id="branchYearSection" style="display:none;">
+      <div id="branchYearFilters" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin:6px 0 10px 0;">
+        <label style="font-size:13px; color: var(--text-light);">Branch</label>
+        <select id="byBranchFilter" style="padding:6px 8px; border:1px solid #e5e7eb; border-radius:6px;"></select>
+        <label style="font-size:13px; color: var(--text-light);">Year</label>
+        <select id="byYearFilter" multiple style="padding:6px 8px; border:1px solid #e5e7eb; border-radius:6px; min-width: 120px; min-height: 72px;"></select>
+        <button id="byScreenshotAllBtn" style="background:#06b6d4; color:#fff; padding:8px 10px; border:none; border-radius:6px; cursor:pointer;">Screenshot (All)</button>
+        <button id="byScreenshotFilteredBtn" style="background:#06b6d4; color:#fff; padding:8px 10px; border:none; border-radius:6px; cursor:pointer;">Screenshot (Filtered)</button>
+      </div>
       <table id="branchYearSummaryTable">
         <thead><tr>
           <th>Branch Name ⬍</th>
@@ -1115,6 +1123,16 @@ function renderTable(data){
   document.querySelectorAll("#branchYearSummaryTable th").forEach((th,i)=>{
     th.addEventListener("click", ()=>sortBranchYearTable(i));
   });
+  // Populate Branch-Year filters and bind events
+  try { populateBranchYearFilters(); } catch(_) {}
+  const byBranchFilter = document.getElementById("byBranchFilter");
+  const byYearFilter = document.getElementById("byYearFilter");
+  if (byBranchFilter) byBranchFilter.addEventListener("change", applyBranchYearFilter);
+  if (byYearFilter) byYearFilter.addEventListener("change", applyBranchYearFilter);
+  const byShotAll = document.getElementById("byScreenshotAllBtn");
+  const byShotFiltered = document.getElementById("byScreenshotFilteredBtn");
+  if (byShotAll) byShotAll.addEventListener("click", ()=>screenshotBranchYear({ mode: "all" }));
+  if (byShotFiltered) byShotFiltered.addEventListener("click", ()=>screenshotBranchYear({ mode: "filtered" }));
   // Sort for pivot table
   document.querySelectorAll("#branchYearPivotTable th").forEach((th,i)=>{
     th.addEventListener("click", ()=>sortBranchYearPivot(i));
@@ -1237,6 +1255,137 @@ function sortBranchYearPivotAmt(colIndex){
   rows.forEach(r=>table.tBodies[0].appendChild(r));
   table.dataset.sortCol=colIndex;
   table.dataset.sortDir=asc?"asc":"desc";
+}
+
+// ---- Branch-Year filters helpers
+function populateBranchYearFilters(){
+  const branchSel = document.getElementById("byBranchFilter");
+  const yearSel = document.getElementById("byYearFilter");
+  if (!branchSel || !yearSel) return;
+  const branches = Array.from(new Set(branchYearSummaryData
+    .filter(r => r["Branch Name"] && r["Branch Name"] !== "TOTAL")
+    .map(r => r["Branch Name"])) ).sort((a,b)=>a.localeCompare(b));
+  const years = Array.from(new Set(branchYearSummaryData
+    .filter(r => r["Year"] && r["Year"] !== "-")
+    .map(r => r["Year"])) ).sort((a,b)=>Number(a)-Number(b));
+  branchSel.innerHTML = `<option value="">All</option>` + branches.map(b=>`<option value="${b}">${b}</option>`).join("");
+  yearSel.innerHTML = `<option value="">All</option>` + years.map(y=>`<option value="${y}">${y}</option>`).join("");
+}
+
+function applyBranchYearFilter(){
+  const table = document.getElementById("branchYearSummaryTable");
+  if (!table) return;
+  const tbody = table.tBodies[0];
+  if (!tbody) return;
+  const { masterLabel, dailyLabel, changeLabel } = getOverdueLabels();
+  const branchVal = (document.getElementById("byBranchFilter")?.value || "").trim();
+  const yearSelect = document.getElementById("byYearFilter");
+  const selectedYears = Array.from(yearSelect?.selectedOptions || []).map(o=>o.value).filter(v=>v);
+  const baseRows = branchYearSummaryData.filter(r => r["Branch Name"] !== "TOTAL");
+  let rows = baseRows.filter(r => (
+    (!branchVal || r["Branch Name"] === branchVal) &&
+    (!selectedYears.length || selectedYears.includes(String(r["Year"])) )
+  ));
+  if (rows.length > 0) {
+    const totalRow = rows.reduce((acc, r) => {
+      acc[masterLabel] += r[masterLabel];
+      acc[dailyLabel] += r[dailyLabel];
+      acc[changeLabel] += r[changeLabel];
+      return acc;
+    }, { "Branch Name": "TOTAL", "Year": "-", [masterLabel]: 0, [dailyLabel]: 0, [changeLabel]: 0 });
+    rows = rows.concat([ totalRow ]);
+  } else {
+    rows = [ { "Branch Name": "TOTAL", "Year": "-", [masterLabel]: 0, [dailyLabel]: 0, [changeLabel]: 0 } ];
+  }
+  // rebuild tbody
+  tbody.innerHTML = "";
+  rows.forEach(r => {
+    const isTotal = r["Branch Name"] === "TOTAL";
+    const cls = isTotal ? "" : (r[changeLabel] > 0 ? "increase" : r[changeLabel] < 0 ? "decrease" : "neutral");
+    const tr = document.createElement("tr");
+    if (isTotal) tr.style.cssText = "font-weight:bold;background:#f2f2f2";
+    tr.innerHTML = `
+      <td>${r["Branch Name"]}</td>
+      <td>${r["Year"]}</td>
+      <td>${Number(r[masterLabel]||0).toLocaleString("en-IN")}</td>
+      <td>${Number(r[dailyLabel]||0).toLocaleString("en-IN")}</td>
+      <td class="${cls}">${Number(r[changeLabel]||0).toLocaleString("en-IN")}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+// ---- Screenshot for Branch-Year table (all or filtered)
+function screenshotBranchYear(opts){
+  const mode = (opts && opts.mode) || "filtered";
+  const sectionTitle = "Branch-Year Overdue Summary (Sale Date from Master)";
+  const table = document.getElementById("branchYearSummaryTable");
+  if (!table) { showNotification("⚠ No Branch-Year table to capture!", "error"); return; }
+  const { masterLabel, dailyLabel, changeLabel } = getOverdueLabels();
+
+  // Build HTML to capture
+  let htmlToCapture = "";
+  if (mode === "all") {
+    // Recreate full table from branchYearSummaryData
+    let rows = branchYearSummaryData;
+    htmlToCapture = `
+      <table id="branchYearSummaryTable" class="screenshot-table">
+        <thead><tr>
+          <th>Branch Name</th>
+          <th>Year</th>
+          <th>${masterLabel}</th>
+          <th>${dailyLabel}</th>
+          <th>${changeLabel}</th>
+        </tr></thead><tbody>
+        ${rows.map(r=>{
+          const isTotal = r["Branch Name"] === "TOTAL";
+          const cls = isTotal ? "" : ((r[changeLabel]||0)>0?"increase":(r[changeLabel]||0)<0?"decrease":"neutral");
+          const styleRow = isTotal?"font-weight:bold;background:#f2f2f2":"";
+          return `<tr style="${styleRow}">
+            <td>${r["Branch Name"]}</td>
+            <td>${r["Year"]}</td>
+            <td>${Number(r[masterLabel]||0).toLocaleString("en-IN")}</td>
+            <td>${Number(r[dailyLabel]||0).toLocaleString("en-IN")}</td>
+            <td class="${cls}">${Number(r[changeLabel]||0).toLocaleString("en-IN")}</td>
+          </tr>`;
+        }).join("")}
+        </tbody></table>
+    `;
+  } else {
+    // Use the currently rendered filtered table
+    htmlToCapture = table.outerHTML.replace('id="branchYearSummaryTable"', 'id="branchYearSummaryTable" class="screenshot-table"');
+  }
+
+  const tempDiv = document.createElement("div");
+  tempDiv.style.background = "#ffffff";
+  tempDiv.style.padding = "20px";
+  tempDiv.style.width = "1200px";
+  tempDiv.style.maxWidth = "1200px";
+  tempDiv.innerHTML = `
+    <h2 style="color: var(--primary); margin-top: 0; margin-bottom: 15px; font-size: 20px;">
+      <i class="material-icons" style="vertical-align: middle; margin-right: 8px;">calendar_today</i>
+      ${sectionTitle}${mode==="filtered"?" (Filtered)":" (All)"}
+    </h2>
+    <style>
+      .screenshot-table { width: 100% !important; border-collapse: separate; border-spacing: 0; font-size: 14px; font-family: 'Inter', 'Noto Sans Bengali', Arial, sans-serif; }
+      .screenshot-table th { background: var(--primary); color: white; padding: 12px 16px; font-weight: 700; text-align: center; white-space: nowrap; font-size: 15px; }
+      .screenshot-table td { padding: 10px 16px; text-align: center; border-bottom: 1px solid #e5e7eb; white-space: nowrap; font-weight: 600; color: #1f2937; text-transform: capitalize; }
+      .screenshot-table tr:last-child td { border-bottom: none; font-weight: 700; background: #f9fafb; }
+      .screenshot-table tr:nth-child(even) { background: #f8fafc; }
+      .screenshot-table .increase { color: var(--danger); font-weight: 700; }
+      .screenshot-table .decrease { color: var(--success); font-weight: 700; }
+      .screenshot-table .neutral { color: #6b7280; font-weight: 600; }
+    </style>
+    ${htmlToCapture}
+  `;
+  document.body.appendChild(tempDiv);
+  html2canvas(tempDiv, { backgroundColor: "#ffffff", scale: 2 }).then(canvas => {
+    const link = document.createElement("a");
+    link.download = `BranchYear_Summary_${mode}.png`;
+    link.href = canvas.toDataURL("image/png");
+    link.click();
+    document.body.removeChild(tempDiv);
+  });
 }
 
 // ---- Helper function to capitalize object values
