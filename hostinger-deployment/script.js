@@ -1743,6 +1743,21 @@ function takeScreenshot() {
     return;
   }
   
+  // Get current date and time
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('en-GB', { 
+    day: '2-digit', 
+    month: '2-digit', 
+    year: 'numeric' 
+  });
+  const timeStr = now.toLocaleTimeString('en-GB', { 
+    hour: '2-digit', 
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false 
+  });
+  const dateTimeStr = `${dateStr} ${timeStr}`;
+  
   // Create a temporary container with only the Branch-wise table
   const tempDiv = document.createElement("div");
   tempDiv.style.background = "#ffffff";
@@ -1750,10 +1765,15 @@ function takeScreenshot() {
   tempDiv.style.width = "1200px";
   tempDiv.style.maxWidth = "1200px";
   tempDiv.innerHTML = `
-    <h2 style="color: var(--primary); margin-top: 0; margin-bottom: 15px; font-size: 20px;">
-      <i class="material-icons" style="vertical-align: middle; margin-right: 8px;">business</i>
-      Branch-wise Overdue Summary
-    </h2>
+    <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 15px;">
+      <h2 style="color: var(--primary); margin-top: 0; margin-bottom: 0; font-size: 20px; flex: 1;">
+        <i class="material-icons" style="vertical-align: middle; margin-right: 8px;">business</i>
+        Branch-wise Overdue Summary
+      </h2>
+      <div style="background-color: #ff0000; color: #ffffff; padding: 8px 16px; border-radius: 4px; font-size: 14px; font-weight: 600; white-space: nowrap; margin-left: 20px;">
+        ${dateTimeStr}
+      </div>
+    </div>
     <div style="width: 100%; overflow-x: auto;">
       <style>
         .screenshot-table {
