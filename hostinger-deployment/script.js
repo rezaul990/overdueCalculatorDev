@@ -28,6 +28,7 @@ let personSummaryData = [];
 let branchYearSummaryData = [];
 let branchYearPivot2425 = [];
 let branchYearPivotAmounts2425 = [];
+let cellcomSummaryData = [];
 let currentUser = null;
 // Global credit state to avoid shadowing inside UI scope
 window.userPlan = "free";
@@ -606,6 +607,8 @@ function readExcel(file, fileType = "default") {
         row.__customer = null;
         row.__personId = null;
         row.__saleYear = null; // extracted from SALE_DATE (DD-MM-YYYY)
+        row.__productCategory = null; // extracted from PRODUCT_CATEGORY column
+        row.__productName = null; // extracted from Product Name column
 
         for (let key in row) {
           let normKey = key.trim().toLowerCase().replace(/_/g," ");
@@ -620,6 +623,14 @@ function readExcel(file, fileType = "default") {
           if (normKey.includes("sale") && normKey.includes("date")) {
             const year = extractYearFromSaleDate(row[key]);
             row.__saleYear = year;
+          }
+          // Detect PRODUCT_CATEGORY column
+          if (normKey === "product category" || normKey === "product_category") {
+            row.__productCategory = row[key] ? row[key].toString().trim() : null;
+          }
+          // Detect Product Name column
+          if (normKey === "product name" || normKey === "product_name") {
+            row.__productName = row[key] ? row[key].toString().trim() : null;
           }
         }
       });
@@ -918,6 +929,45 @@ async function processFiles() {
     branchYearPivotAmounts2425.push(totalRowAmt);
   }
 
+  // Process CELLCOM Product Category comparison (filter by PRODUCT_CATEGORY = "CELLCOM" from Master file)
+  cellcomSummaryData = [];
+  let cellcomSummary = {};
+  masterData.forEach(masterRow => {
+    if (!masterRow.__id || !masterRow.__branch || masterRow.__branch === "PLAZA") return;
+    
+    // Filter rows where PRODUCT_CATEGORY contains "CELLCOM" (case-insensitive)
+    const productCategory = masterRow.__productCategory ? masterRow.__productCategory.toString().trim().toUpperCase() : "";
+    if (productCategory !== "CELLCOM") return;
+    
+    const dailyEntry = dailyMap[masterRow.__id];
+    const m = masterRow.__overdue || 0;
+    const d = dailyEntry ? (dailyEntry.overdue || 0) : 0;
+    const diff = d - m;
+    
+    const branch = capitalizeText(masterRow.__branch);
+    if (!cellcomSummary[branch]) {
+      cellcomSummary[branch] = {
+        "Branch Name": branch,
+        masterTotal: 0,
+        dailyTotal: 0,
+        change: 0
+      };
+    }
+    cellcomSummary[branch].masterTotal += m;
+    cellcomSummary[branch].dailyTotal += d;
+    cellcomSummary[branch].change += diff;
+  });
+  
+  cellcomSummaryData = Object.values(cellcomSummary).sort((a,b) => a["Branch Name"].localeCompare(b["Branch Name"]));
+  if (cellcomSummaryData.length > 0) {
+    cellcomSummaryData.push(cellcomSummaryData.reduce((acc, r) => {
+      acc.masterTotal += r.masterTotal;
+      acc.dailyTotal += r.dailyTotal;
+      acc.change += r.change;
+      return acc;
+    }, { "Branch Name": "TOTAL", masterTotal: 0, dailyTotal: 0, change: 0 }));
+  }
+
   renderTable(summaryData); 
   loadingDiv.style.display="none";
   showNotification("✅ Comparison complete!", "success");
@@ -1103,6 +1153,39 @@ function renderTable(data){
     html += `</tbody></table>
     </div>`;
   }
+
+  // Add CELLCOM Product Category summary if available (collapsible)
+  if (cellcomSummaryData.length > 0) {
+    html += `<h2 id="cellcomToggle" style="color: var(--primary); margin-top: 40px; margin-bottom: 10px; font-size: 20px; cursor: pointer; display:flex; align-items:center; gap:8px;">
+      <i class="material-icons" style="vertical-align: middle;">category</i>
+      <span style="flex:1;">CELLCOM Product Category - Overdue Comparison</span>
+      <span id="cellcomChevron" class="material-icons" style="font-size:20px; opacity:0.8;">expand_more</span>
+    </h2>`;
+    html += `<div id="cellcomSection" style="display:none;">
+      <table id="cellcomSummaryTable">
+        <thead><tr>
+          <th>Branch Name ⬍</th>
+          <th>${masterLabel}</th>
+          <th>${dailyLabel}</th>
+          <th>${changeLabel}</th>
+        </tr></thead><tbody>`;
+
+    cellcomSummaryData.forEach(r => {
+      let cls = "neutral";
+      if (r["Branch Name"] !== "TOTAL") {
+        cls = r.change > 0 ? "increase" : r.change < 0 ? "decrease" : "neutral";
+      }
+      html += `<tr style="${r["Branch Name"]==="TOTAL"?"font-weight:bold;background:#f2f2f2":""}">
+        <td>${r["Branch Name"]}</td>
+        <td>${r.masterTotal.toLocaleString("en-IN")}</td>
+        <td>${r.dailyTotal.toLocaleString("en-IN")}</td>
+        <td class="${cls}">${r.change.toLocaleString("en-IN")}</td>
+      </tr>`;
+    });
+
+    html += `</tbody></table>
+    </div>`;
+  }
   
   resultDiv.innerHTML=html;
 
@@ -1166,6 +1249,20 @@ function renderTable(data){
   const bypAmtChevron = document.getElementById("branchYearPivotAmtChevron");
   if (bypAmtToggle && bypAmtSection && bypAmtChevron) {
     bypAmtToggle.addEventListener("click", () => toggleSection(bypAmtSection, bypAmtChevron));
+  }
+  const cellcomToggle = document.getElementById("cellcomToggle");
+  const cellcomSection = document.getElementById("cellcomSection");
+  const cellcomChevron = document.getElementById("cellcomChevron");
+  if (cellcomToggle && cellcomSection && cellcomChevron) {
+    cellcomToggle.addEventListener("click", () => toggleSection(cellcomSection, cellcomChevron));
+  }
+  
+  // Sort by clicking headers for CELLCOM table
+  const cellcomTable = document.getElementById("cellcomSummaryTable");
+  if (cellcomTable) {
+    document.querySelectorAll("#cellcomSummaryTable th").forEach((th,i)=>{
+      th.addEventListener("click", ()=>sortCellcomTable(i));
+    });
   }
 }
 
@@ -1241,6 +1338,24 @@ function sortBranchYearPivot(colIndex){
 
 function sortBranchYearPivotAmt(colIndex){
   const table = document.getElementById("branchYearPivotAmtTable");
+  if (!table) return;
+  let rows = Array.from(table.tBodies[0].rows);
+  rows.pop(); // remove TOTAL
+  let asc = table.dataset.sortCol==colIndex && table.dataset.sortDir==="asc" ? false : true;
+  rows.sort((a,b)=>{
+    let valA=a.cells[colIndex].innerText.replace(/,/g,'');
+    let valB=b.cells[colIndex].innerText.replace(/,/g,'');
+    let numA=Number(valA), numB=Number(valB);
+    if(!isNaN(numA) && !isNaN(numB)) return asc ? numA-numB : numB-numA;
+    return asc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+  });
+  rows.forEach(r=>table.tBodies[0].appendChild(r));
+  table.dataset.sortCol=colIndex;
+  table.dataset.sortDir=asc?"asc":"desc";
+}
+
+function sortCellcomTable(colIndex){
+  const table = document.getElementById("cellcomSummaryTable");
   if (!table) return;
   let rows = Array.from(table.tBodies[0].rows);
   rows.pop(); // remove TOTAL
@@ -1851,7 +1966,7 @@ function clearFiles(){
   masterInput.value=""; dailyInput.value="";
   document.getElementById("masterFileName").innerText="No file chosen...";
   document.getElementById("dailyFileName").innerText="No file chosen...";
-  resultDiv.innerHTML=""; summaryData=[]; accountsData=[]; personSummaryData=[];
+  resultDiv.innerHTML=""; summaryData=[]; accountsData=[]; personSummaryData=[]; cellcomSummaryData=[];
   hideNotification();
 }
 
