@@ -596,46 +596,125 @@ function readExcel(file, fileType = "default") {
         return;
       }
 
+      // Check if this file has SALE_MST_ID column by looking at headers
+      const headers = [];
+      for (let C = range.s.c; C <= range.e.c; ++C) {
+        const cellAddr = XLSX.utils.encode_cell({ r: headerRowIndex, c: C });
+        const cell = sheet[cellAddr];
+        headers.push(cell && cell.v ? cell.v.toString().trim().toLowerCase().replace(/_/g, " ") : "");
+      }
+      const hasSaleMstId = headers.some(h => h === "sale mst id");
+      
+      // If no SALE_MST_ID, get Invoice No from specific columns
+      // Master file: Column N (index 13) for Invoice, Column R (index 17) for Overdue, Column E (index 4) for Branch
+      // Daily file: Column H (index 7) for Invoice, Column AD (index 29) for Overdue
+      // fileType can be "master", "daily", or "daily_invoice_mode" (forced invoice mode)
+      let invoiceColIndex = null;
+      let overdueColIndex = null;
+      let branchColIndex = null;
+      const useInvoiceMode = !hasSaleMstId || fileType === "daily_invoice_mode";
+      
+      console.log("File type:", fileType, "Has SALE_MST_ID:", hasSaleMstId, "Use Invoice Mode:", useInvoiceMode);
+      console.log("Header row index:", headerRowIndex);
+      console.log("Headers found:", headers.slice(0, 15));
+      
+      if (useInvoiceMode) {
+        if (fileType === "master") {
+          invoiceColIndex = 13; // Column N - Invoice No
+          overdueColIndex = 17; // Column R - Previous Month Overdue
+          branchColIndex = 4; // Column E - Plaza/Branch
+        } else if (fileType === "daily" || fileType === "daily_invoice_mode") {
+          invoiceColIndex = 7; // Column H - Sale Invoice
+          overdueColIndex = 29; // Column AD - Overdue
+        }
+        console.log("Invoice col:", invoiceColIndex, "Overdue col:", overdueColIndex, "Branch col:", branchColIndex);
+      }
+
       const jsonData = XLSX.utils.sheet_to_json(sheet, { defval:"", raw:true, range: headerRowIndex });
 
-      // Process all files with Person ID detection
-      jsonData.forEach(row => {
+      // Process all files
+      jsonData.forEach((row, rowIdx) => {
         row.__id = null;
+        row.__invoiceNo = null;
         row.__overdue = 0;
         row.__branch = null;
         row.__account = null;
         row.__customer = null;
         row.__personId = null;
-        row.__saleYear = null; // extracted from SALE_DATE (DD-MM-YYYY)
-        row.__productCategory = null; // extracted from PRODUCT_CATEGORY column
-        row.__productName = null; // extracted from Product Name column
+        row.__saleYear = null;
+        row.__productCategory = null;
+        row.__productName = null;
 
+        // Get all column keys for this row
+        const keys = Object.keys(row);
+        
         for (let key in row) {
           let normKey = key.trim().toLowerCase().replace(/_/g," ");
-          if (normKey === "sale mst id") row.__id = forceToNumber(row[key]);
-          if (normKey.includes("overdue") || normKey.includes("over due")) row.__overdue = forceToNumber(row[key]);
+          
+          // SALE_MST_ID mode: use column names
+          if (!useInvoiceMode) {
+            if (normKey === "sale mst id") row.__id = forceToNumber(row[key]);
+            if (normKey.includes("overdue") || normKey.includes("over due")) row.__overdue = forceToNumber(row[key]);
+          }
+          
+          // Common fields for both modes
           if (normKey === "plaza") row.__branch = row[key] ? row[key].toString().trim().toUpperCase() : null;
           if (["account no","account number","account"].includes(normKey)) row.__account = row[key] ? row[key].toString().trim() : "";
           if (normKey.includes("customer")) row.__customer = row[key] ? row[key].toString().trim() : "";
-          // Detect Person ID in any file
           if (normKey.includes("person") && normKey.includes("id")) row.__personId = row[key] ? row[key].toString().trim() : null;
-          // Detect SALE_DATE and extract year
           if (normKey.includes("sale") && normKey.includes("date")) {
-            const year = extractYearFromSaleDate(row[key]);
-            row.__saleYear = year;
+            row.__saleYear = extractYearFromSaleDate(row[key]);
           }
-          // Detect PRODUCT_CATEGORY column
           if (normKey === "product category" || normKey === "product_category") {
             row.__productCategory = row[key] ? row[key].toString().trim() : null;
           }
-          // Detect Product Name column
           if (normKey === "product name" || normKey === "product_name") {
             row.__productName = row[key] ? row[key].toString().trim() : null;
           }
         }
+        
+        // Invoice No mode: use specific column indexes
+        if (useInvoiceMode) {
+          // Get value by column index from keys array
+          if (invoiceColIndex !== null && keys[invoiceColIndex]) {
+            const val = row[keys[invoiceColIndex]];
+            if (val) {
+              row.__invoiceNo = val.toString().trim();
+              row.__id = row.__invoiceNo;
+            }
+          }
+          
+          if (overdueColIndex !== null && keys[overdueColIndex]) {
+            const val = row[keys[overdueColIndex]];
+            row.__overdue = forceToNumber(val);
+          }
+          
+          if (branchColIndex !== null && keys[branchColIndex]) {
+            const val = row[keys[branchColIndex]];
+            if (val) {
+              row.__branch = val.toString().trim().toUpperCase();
+            }
+          }
+        }
       });
+      
+      // Filter out invalid rows
+      const validRows = jsonData.filter(r => {
+        if (fileType === "master") {
+          return r.__id && r.__branch && r.__branch !== "PLAZA";
+        } else {
+          return r.__id;
+        }
+      });
+      
+      console.log("File:", fileType, "Use Invoice Mode:", useInvoiceMode);
+      console.log("Total rows:", jsonData.length, "Valid rows:", validRows.length);
+      if (validRows.length > 0) {
+        console.log("First row:", { __id: validRows[0].__id, __branch: validRows[0].__branch, __overdue: validRows[0].__overdue });
+        console.log("Last row:", { __id: validRows[validRows.length-1].__id, __branch: validRows[validRows.length-1].__branch, __overdue: validRows[validRows.length-1].__overdue });
+      }
 
-      resolve(jsonData);
+      resolve(validRows);
     };
     reader.readAsArrayBuffer(file);
   });
@@ -697,15 +776,20 @@ async function processFiles() {
   if (wantSaved && !masterFileFromInput) {
     const key = getUserScopedKey();
     const saved = await idbGet(key);
-    if (!saved) { showNotification("⚠ No saved Master found on this device.", "error"); return; }
+    if (!saved) { showNotification("⚠ No saved Master found on this device.", "error"); loadingDiv.style.display="none"; return; }
     const masterBlob = saved && saved.blob ? saved.blob : null;
-    if (!masterBlob) { showNotification("⚠ Saved Master is corrupted.", "error"); return; }
+    if (!masterBlob) { showNotification("⚠ Saved Master is corrupted.", "error"); loadingDiv.style.display="none"; return; }
     const fileLike = new File([masterBlob], saved.name || "saved_master.xlsx", { type: masterBlob.type || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-    masterData = await readExcel(fileLike);
+    masterData = await readExcel(fileLike, "master");
   } else {
-    masterData = await readExcel(masterFileFromInput);
+    masterData = await readExcel(masterFileFromInput, "master");
   }
-  const dailyData=await readExcel(dailyInput.files[0]);
+  
+  // Check if master file uses Invoice No mode (no SALE_MST_ID)
+  const masterUsesInvoiceNo = masterData.some(r => r.__invoiceNo !== null && r.__id === r.__invoiceNo);
+  const dailyFileType = masterUsesInvoiceNo ? "daily_invoice_mode" : "daily";
+  
+  const dailyData = await readExcel(dailyInput.files[0], dailyFileType);
 
   let dailyMap={};
   dailyData.forEach(r=>{
@@ -713,6 +797,10 @@ async function processFiles() {
   });
 
   let summary={}; accountsData=[];
+  
+  // Detect if master file uses Invoice No instead of Sale Mst ID
+  const usesInvoiceNo = masterData.some(r => r.__invoiceNo !== null && r.__id === r.__invoiceNo);
+  const idColumnName = usesInvoiceNo ? "Invoice No" : "Sale Mst ID";
 
   masterData.forEach(r=>{
     if(!r.__id || !r.__branch || r.__branch==="PLAZA") return;
@@ -735,7 +823,7 @@ async function processFiles() {
 
     const { masterLabel, dailyLabel, changeLabel } = getOverdueLabels();
     accountsData.push({
-      "Sale Mst ID": r.__id,
+      [idColumnName]: r.__id,
       "Branch Name": capitalizeText(r.__branch),
       "Account Number": r.__account || (dailyEntry ? dailyEntry.account : ""),
       "Customer Name": capitalizeText(r.__customer || (dailyEntry ? dailyEntry.customer : "")),
