@@ -29,6 +29,7 @@ let branchYearSummaryData = [];
 let branchYearPivot2425 = [];
 let branchYearPivotAmounts2425 = [];
 let cellcomSummaryData = [];
+let branchYearCurrentOverdueData = [];
 let currentUser = null;
 // Global credit state to avoid shadowing inside UI scope
 window.userPlan = "free";
@@ -662,7 +663,7 @@ function readExcel(file, fileType = "default") {
           if (["account no","account number","account"].includes(normKey)) row.__account = row[key] ? row[key].toString().trim() : "";
           if (normKey.includes("customer")) row.__customer = row[key] ? row[key].toString().trim() : "";
           if (normKey.includes("person") && normKey.includes("id")) row.__personId = row[key] ? row[key].toString().trim() : null;
-          if (normKey.includes("sale") && normKey.includes("date")) {
+          if ((normKey.includes("sale") && normKey.includes("date")) || normKey === "invoice date" || normKey === "inv date") {
             row.__saleYear = extractYearFromSaleDate(row[key]);
           }
           if (normKey === "product category" || normKey === "product_category") {
@@ -1056,6 +1057,52 @@ async function processFiles() {
     }, { "Branch Name": "TOTAL", masterTotal: 0, dailyTotal: 0, change: 0 }));
   }
 
+  // Process Branch-Year Current Overdue Report (pivot by year: rows=branch, cols=years)
+  branchYearCurrentOverdueData = [];
+  const currentOverdueMap = {};
+  const currentOverdueYears = new Set();
+  masterData.forEach(masterRow => {
+    if (!masterRow.__branch || masterRow.__branch === "PLAZA") return;
+    const year = masterRow.__saleYear;
+    if (!year) return;
+    const branch = capitalizeText(masterRow.__branch);
+    const dailyEntry = dailyMap[masterRow.__id];
+    const currentOverdue = dailyEntry ? (dailyEntry.overdue || 0) : 0;
+    currentOverdueYears.add(year);
+    if (!currentOverdueMap[branch]) {
+      currentOverdueMap[branch] = { "Branch Name": branch };
+    }
+    const qKey = "q" + year;
+    const aKey = "a" + year;
+    currentOverdueMap[branch][qKey] = (currentOverdueMap[branch][qKey] || 0) + 1;
+    currentOverdueMap[branch][aKey] = (currentOverdueMap[branch][aKey] || 0) + currentOverdue;
+  });
+  const sortedYears = Array.from(currentOverdueYears).sort((a, b) => a - b);
+  // Compute totals per branch
+  Object.values(currentOverdueMap).forEach(row => {
+    row.qT = 0; row.aT = 0;
+    sortedYears.forEach(y => {
+      row.qT += (row["q" + y] || 0);
+      row.aT += (row["a" + y] || 0);
+    });
+  });
+  branchYearCurrentOverdueData = Object.values(currentOverdueMap)
+    .sort((a, b) => a["Branch Name"].localeCompare(b["Branch Name"]));
+  if (branchYearCurrentOverdueData.length > 0) {
+    const totalRow = branchYearCurrentOverdueData.reduce((acc, r) => {
+      acc.qT += (r.qT || 0);
+      acc.aT += (r.aT || 0);
+      sortedYears.forEach(y => {
+        acc["q" + y] = (acc["q" + y] || 0) + (r["q" + y] || 0);
+        acc["a" + y] = (acc["a" + y] || 0) + (r["a" + y] || 0);
+      });
+      return acc;
+    }, { "Branch Name": "TOTAL", qT: 0, aT: 0 });
+    branchYearCurrentOverdueData.push(totalRow);
+  }
+  // Store years globally so renderTable can access them
+  window._currentOverduePivotYears = sortedYears;
+
   renderTable(summaryData); 
   loadingDiv.style.display="none";
   showNotification("✅ Comparison complete!", "success");
@@ -1274,6 +1321,45 @@ function renderTable(data){
     html += `</tbody></table>
     </div>`;
   }
+
+  // Add Branch-Year Current Overdue Report if available (collapsible pivot)
+  if (branchYearCurrentOverdueData.length > 0) {
+    const pivotYears = window._currentOverduePivotYears || [];
+    html += `<h2 id="branchYearCurrentOverdueToggle" style="color: var(--primary); margin-top: 40px; margin-bottom: 10px; font-size: 20px; cursor: pointer; display:flex; align-items:center; gap:8px;">
+      <i class="material-icons" style="vertical-align: middle;">assessment</i>
+      <span style="flex:1;">Branch Wise &amp; Year Wise Current Overdue Report</span>
+      <span id="branchYearCurrentOverdueChevron" class="material-icons" style="font-size:20px; opacity:0.8;">expand_more</span>
+    </h2>`;
+    html += `<div id="branchYearCurrentOverdueSection" style="display:none;">
+      <table id="branchYearCurrentOverdueTable">
+        <thead>
+          <tr>
+            <th rowspan="2">Branch Name ⬍</th>
+            ${pivotYears.map(y => `<th colspan="2">${y}</th>`).join("")}
+            <th colspan="2">Total</th>
+          </tr>
+          <tr>
+            ${pivotYears.map(() => `<th>Qty</th><th>Overdue</th>`).join("")}
+            <th>Qty</th><th>Overdue</th>
+          </tr>
+        </thead><tbody>`;
+
+    branchYearCurrentOverdueData.forEach(r => {
+      const isTotal = r["Branch Name"] === "TOTAL";
+      html += `<tr style="${isTotal?"font-weight:bold;background:#f2f2f2":""}">`;
+      html += `<td>${r["Branch Name"]}</td>`;
+      pivotYears.forEach(y => {
+        html += `<td>${Number(r["q" + y] || 0).toLocaleString("en-IN")}</td>`;
+        html += `<td>${Number(r["a" + y] || 0).toLocaleString("en-IN")}</td>`;
+      });
+      html += `<td>${Number(r.qT || 0).toLocaleString("en-IN")}</td>`;
+      html += `<td>${Number(r.aT || 0).toLocaleString("en-IN")}</td>`;
+      html += `</tr>`;
+    });
+
+    html += `</tbody></table>
+    </div>`;
+  }
   
   resultDiv.innerHTML=html;
 
@@ -1352,6 +1438,20 @@ function renderTable(data){
       th.addEventListener("click", ()=>sortCellcomTable(i));
     });
   }
+
+  // Toggle and sort for Branch-Year Current Overdue table
+  const branchYearCurrentOverdueToggle = document.getElementById("branchYearCurrentOverdueToggle");
+  const branchYearCurrentOverdueSection = document.getElementById("branchYearCurrentOverdueSection");
+  const branchYearCurrentOverdueChevron = document.getElementById("branchYearCurrentOverdueChevron");
+  if (branchYearCurrentOverdueToggle && branchYearCurrentOverdueSection && branchYearCurrentOverdueChevron) {
+    branchYearCurrentOverdueToggle.addEventListener("click", () => toggleSection(branchYearCurrentOverdueSection, branchYearCurrentOverdueChevron));
+  }
+  const branchYearCurrentOverdueTable = document.getElementById("branchYearCurrentOverdueTable");
+  if (branchYearCurrentOverdueTable) {
+    document.querySelectorAll("#branchYearCurrentOverdueTable th").forEach((th,i)=>{
+      th.addEventListener("click", ()=>sortBranchYearCurrentOverdueTable(i));
+    });
+  }
 }
 
 function sortTable(colIndex){
@@ -1408,6 +1508,24 @@ function sortBranchYearTable(colIndex){
 
 function sortCellcomTable(colIndex){
   const table = document.getElementById("cellcomSummaryTable");
+  if (!table) return;
+  let rows = Array.from(table.tBodies[0].rows);
+  rows.pop(); // remove TOTAL
+  let asc = table.dataset.sortCol==colIndex && table.dataset.sortDir==="asc" ? false : true;
+  rows.sort((a,b)=>{
+    let valA=a.cells[colIndex].innerText.replace(/,/g,'');
+    let valB=b.cells[colIndex].innerText.replace(/,/g,'');
+    let numA=Number(valA), numB=Number(valB);
+    if(!isNaN(numA) && !isNaN(numB)) return asc ? numA-numB : numB-numA;
+    return asc ? valA.localeCompare(valB) : valB.localeCompare(valA);
+  });
+  rows.forEach(r=>table.tBodies[0].appendChild(r));
+  table.dataset.sortCol=colIndex;
+  table.dataset.sortDir=asc?"asc":"desc";
+}
+
+function sortBranchYearCurrentOverdueTable(colIndex){
+  const table = document.getElementById("branchYearCurrentOverdueTable");
   if (!table) return;
   let rows = Array.from(table.tBodies[0].rows);
   rows.pop(); // remove TOTAL
@@ -1654,6 +1772,22 @@ function downloadCombined(){
   // Add Branch-Year 2024/2025 Amounts pivot if available
   if (branchYearPivotAmountsExport.length > 0) {
     XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(branchYearPivotAmountsExport),"BranchYear_2024_2025_Amounts");
+  }
+
+  // Add Branch-Year Current Overdue pivot if available
+  if (branchYearCurrentOverdueData.length > 0) {
+    const pivotYears = window._currentOverduePivotYears || [];
+    const currentOverdueExport = branchYearCurrentOverdueData.map(r => {
+      const row = { "Branch Name": r["Branch Name"] };
+      pivotYears.forEach(y => {
+        row[y + " Qty"] = r["q" + y] || 0;
+        row[y + " Overdue"] = r["a" + y] || 0;
+      });
+      row["Total Qty"] = r.qT || 0;
+      row["Total Overdue"] = r.aT || 0;
+      return row;
+    });
+    XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(currentOverdueExport),"BranchYear_CurrentOverdue");
   }
   
   XLSX.writeFile(wb,"Overdue_Report.xlsx");
